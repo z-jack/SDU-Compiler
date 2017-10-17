@@ -38,17 +38,45 @@ enum SYMBOLS {
 	EOS
 };
 
+enum ASSEMBLE {
+	LIT,
+	LOD,
+	STO,
+	CAL,
+	INT,
+	JMP,
+	JPC,
+	OPR
+};
+
 struct Token
 {
 	SYMBOLS sym;
 	void* value;
 };
 
+struct Entry
+{
+	std::string name;
+	SYMBOLS sym;
+	int value;
+	int level;
+	unsigned int address;
+};
+
+#define Assert(a,b) \
+if(a!=b){throw std::exception("Unexpected Symbol.");}\
+else
+#define AssertCond(a) \
+if(!a){throw std::exception("Unexpected Symbol.");}\
+else
+
 using namespace std;
 void Lexer(string prog, Token*& tarr, int& size);
 Token ReadBlock(string::iterator& it, string::iterator& end);
 SYMBOLS GetSymbol(Token* t);
 SYMBOLS NextSymbol(Token*& tarr, int& size, bool flag);
+void Maintain(string name, SYMBOLS s, int value, void* ptr);
 bool IsRelOpt(SYMBOLS s);
 bool IsAddSub(SYMBOLS s);
 bool IsMulDiv(SYMBOLS s);
@@ -73,6 +101,11 @@ void Expression(Token*& tarr, int& size);
 void Term(Token*& tarr, int& size);
 void Factor(Token*& tarr, int& size);
 
+int level = 0;
+Entry* etable = new struct Entry[1024];
+int idx = 0;
+int vct = 3;
+
 int main(int argc, char** argv)
 {
 	if (argc != 2) {
@@ -86,7 +119,14 @@ int main(int argc, char** argv)
 	Lexer(prog, tarr, size);
 	Token* t = tarr;
 	int s = size;
-	Parser(t, s);
+	try {
+		Parser(t, s);
+	}
+	catch (exception e) {
+		fprintf(stderr, "<Parser Error> %s\n", e.what());
+		return 1;
+	}
+	delete[] tarr;
 	return 0;
 }
 
@@ -95,6 +135,7 @@ void Lexer(string prog, Token*& tarr, int& size) {
 	queue<Token> q;
 	for (it = prog.begin(); it < prog.end(); it++) {
 		q.push(ReadBlock(it, prog.end()));
+		char* c = (char*)q.back().value;
 	}
 	q.push(Token{ EOS, nullptr });
 	tarr = new Token[q.size()];
@@ -172,10 +213,12 @@ Token ReadBlock(string::iterator& it, string::iterator& end) {
 		}
 		else
 		{
-			return Token{ IDENTIFIER,(void*)current.c_str() };
+			char* c = new char[current.size() + 1];
+			strcpy(c, current.c_str());
+			return Token{ IDENTIFIER,(void*)c };
 		}
 	}
-	if(ch>='0'&&ch<='9')
+	if (ch >= '0'&&ch <= '9')
 	{
 		string current = "";
 		while ((ch >= '0'&&ch <= '9') && it < end)
@@ -189,8 +232,8 @@ Token ReadBlock(string::iterator& it, string::iterator& end) {
 		if (ch != ' '&&ch != '\n') {
 			it--;
 		}
-		unsigned int i = stoi(current);
-		return Token{ NUMBER, (void*)&i };
+		unsigned int* i = new unsigned int(stoi(current));
+		return Token{ NUMBER, (void*)i };
 	}
 	if (ch == '(')
 		return Token{ BRACKETSTART,nullptr };
@@ -242,6 +285,7 @@ Token ReadBlock(string::iterator& it, string::iterator& end) {
 		}
 		return Token{ EXCEPTION,nullptr };
 	}
+	return Token{ EXCEPTION, nullptr };
 }
 
 SYMBOLS GetSymbol(Token* t) {
@@ -251,12 +295,46 @@ SYMBOLS GetSymbol(Token* t) {
 SYMBOLS NextSymbol(Token*& tarr, int& size, bool flag = true) {
 	if (size <= 0)
 		if (flag)
-			throw exception();
+			throw exception("Access Denied: Out of Index.");
 		else
 			return EXCEPTION;
 	tarr++;
 	size--;
 	return GetSymbol(tarr);
+}
+
+void Maintain(string name, SYMBOLS s, int value = 0, unsigned int ptr = 0)
+{
+	if (s != CONST&&s != VARIABLE&&s != FUNCTION)
+		throw exception("Not Supported Symbol.");
+	for (int i = idx - 1; i >= 0; i--) {
+		if (etable[i].level < level)break;
+		if (etable[i].name==name) {
+			switch (etable[i].sym)
+			{
+			case CONST:
+				throw exception("Redefine Constant.");
+				break;
+			case VARIABLE:
+				if (s == VARIABLE)
+					return;
+				else
+					throw exception("Redefine Variable to Other Type.");
+				break;
+			case FUNCTION:
+				throw exception("Redefine Function.");
+				break;
+			default:
+				throw exception("Not Supported Symbol.");
+				break;
+			}
+		}
+	}
+	Entry e = Entry{ name,s,value,level,0 };
+	if (s == VARIABLE) {
+		e.address = vct++;
+	}
+	etable[idx++] = e;
 }
 
 bool IsRelOpt(SYMBOLS s) {
@@ -276,7 +354,6 @@ void Parser(Token*& tarr, int& size) {
 	if (size > 0 && GetSymbol(tarr) != EOS) {
 		throw exception();
 	}
-	printf("parser finish");
 }
 
 void SubProgram(Token*& tarr, int& size) {
@@ -291,9 +368,7 @@ void SubProgram(Token*& tarr, int& size) {
 
 void ConstDec(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != CONST) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), CONST);
 	NextSymbol(tarr, size);
 	ConstDef(tarr, size);
 	while (GetSymbol(tarr) == COMMA)
@@ -301,53 +376,50 @@ void ConstDec(Token *& tarr, int & size)
 		NextSymbol(tarr, size);
 		ConstDef(tarr, size);
 	}
-	if (GetSymbol(tarr) != SEMICOLON) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), SEMICOLON);
 	NextSymbol(tarr, size);
 }
 
 void ConstDef(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != IDENTIFIER) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != EQ) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != NUMBER) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), IDENTIFIER);
+	string name((char*)(tarr->value));
+	Assert(NextSymbol(tarr, size), EQ);
+	Assert(NextSymbol(tarr, size), NUMBER);
+	int value(*(int*)(tarr->value));
+	Maintain(name, CONST, value);
 	NextSymbol(tarr, size);
 }
 
 void VarDec(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != VARIABLE) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != IDENTIFIER) {
-		throw exception();
-	}
-	while (NextSymbol(tarr,size)==COMMA)
+	Assert(GetSymbol(tarr), VARIABLE);
+	Assert(NextSymbol(tarr, size), IDENTIFIER);
+	string name((char*)(tarr->value));
+	Maintain(name, VARIABLE);
+	while (NextSymbol(tarr, size) == COMMA)
 	{
-		if (NextSymbol(tarr, size) != IDENTIFIER) {
-			throw exception();
-		}
+		Assert(NextSymbol(tarr, size), IDENTIFIER);
+		name = string((char*)(tarr->value));
+		Maintain(name, VARIABLE);
 	}
-	if (GetSymbol(tarr) != SEMICOLON) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), SEMICOLON);
 	NextSymbol(tarr, size);
 }
 
 void FuncDec(Token *& tarr, int & size)
 {
 	FuncHead(tarr, size);
-	SubProgram(tarr, size);
-	if (GetSymbol(tarr) != SEMICOLON) {
-		throw exception();
+	int v = vct;
+	level++;
+	vct = 3;
+	if (level > 3) {
+		throw exception("Stack Overflow.");
 	}
+	SubProgram(tarr, size);
+	level--;
+	vct = v;
+	Assert(GetSymbol(tarr), SEMICOLON);
 	NextSymbol(tarr, size);
 	if (GetSymbol(tarr) == FUNCTION) {
 		FuncDec(tarr, size);
@@ -356,15 +428,11 @@ void FuncDec(Token *& tarr, int & size)
 
 void FuncHead(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != FUNCTION) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != IDENTIFIER) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != SEMICOLON) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), FUNCTION);
+	Assert(NextSymbol(tarr, size), IDENTIFIER);
+	string name((char*)(tarr->value));
+	Maintain(name, FUNCTION);
+	Assert(NextSymbol(tarr, size), SEMICOLON);
 	NextSymbol(tarr, size);
 }
 
@@ -374,7 +442,7 @@ void Statement(Token *& tarr, int & size)
 	if (sym == IDENTIFIER) {
 		AssignStm(tarr, size);
 	}
-	else if(sym ==IF)
+	else if (sym == IF)
 	{
 		CondStm(tarr, size);
 	}
@@ -397,113 +465,73 @@ void Statement(Token *& tarr, int & size)
 
 void AssignStm(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != IDENTIFIER) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != ASSIGN) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), IDENTIFIER);
+	Assert(NextSymbol(tarr, size), ASSIGN);
 	NextSymbol(tarr, size);
 	Expression(tarr, size);
 }
 
 void CondStm(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != IF) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), IF);
 	NextSymbol(tarr, size);
 	Cond(tarr, size);
-	if (GetSymbol(tarr) != THEN) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), THEN);
 	NextSymbol(tarr, size);
 	Statement(tarr, size);
 }
 
 void WhileStm(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != WHILE) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), WHILE);
 	NextSymbol(tarr, size);
 	Cond(tarr, size);
-	if (GetSymbol(tarr) != DO) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), DO);
 	NextSymbol(tarr, size);
 	Statement(tarr, size);
 }
 
 void CallStm(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != CALL) {
-		throw exception();
-	}
-	if (NextSymbol(tarr,size) != IDENTIFIER) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), CALL);
+	Assert(NextSymbol(tarr, size), IDENTIFIER);
 	NextSymbol(tarr, size);
 }
 
 void ReadStm(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != READ) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != BRACKETSTART) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != IDENTIFIER) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), READ);
+	Assert(NextSymbol(tarr, size), BRACKETSTART);
+	Assert(NextSymbol(tarr, size), IDENTIFIER);
 	while (NextSymbol(tarr, size) == COMMA) {
-		if (NextSymbol(tarr, size) != IDENTIFIER) {
-			throw exception();
-		}
+		Assert(NextSymbol(tarr, size), IDENTIFIER);
 	}
-	if (GetSymbol(tarr) != BRACKETEND) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), BRACKETEND);
 	NextSymbol(tarr, size);
 }
 
 void WriteStm(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != WRITE) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != BRACKETSTART) {
-		throw exception();
-	}
-	if (NextSymbol(tarr, size) != IDENTIFIER) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), WRITE);
+	Assert(NextSymbol(tarr, size), BRACKETSTART);
+	Assert(NextSymbol(tarr, size), IDENTIFIER);
 	while (NextSymbol(tarr, size) == COMMA) {
-		if (NextSymbol(tarr, size) != IDENTIFIER) {
-			throw exception();
-		}
+		Assert(NextSymbol(tarr, size), IDENTIFIER);
 	}
-	if (GetSymbol(tarr) != BRACKETEND) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), BRACKETEND);
 	NextSymbol(tarr, size);
 }
 
 void CompStm(Token *& tarr, int & size)
 {
-	if (GetSymbol(tarr) != BEGIN) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), BEGIN);
 	NextSymbol(tarr, size);
 	Statement(tarr, size);
 	while (GetSymbol(tarr) == SEMICOLON) {
 		NextSymbol(tarr, size);
 		Statement(tarr, size);
 	}
-	if (GetSymbol(tarr) != END) {
-		throw exception();
-	}
+	Assert(GetSymbol(tarr), END);
 	NextSymbol(tarr, size);
 }
 
@@ -519,9 +547,7 @@ void Cond(Token *& tarr, int & size)
 	}
 	else {
 		Expression(tarr, size);
-		if (!IsRelOpt(GetSymbol(tarr))) {
-			throw exception();
-		}
+		AssertCond(IsRelOpt(GetSymbol(tarr)));
 		NextSymbol(tarr, size);
 		Expression(tarr, size);
 	}
@@ -553,18 +579,13 @@ void Term(Token *& tarr, int & size)
 void Factor(Token *& tarr, int & size)
 {
 	SYMBOLS sym = GetSymbol(tarr);
-	if (sym == IDENTIFIER || sym==NUMBER) {
+	if (sym == IDENTIFIER || sym == NUMBER) {
 		NextSymbol(tarr, size);
 	}
-	else if (sym == BRACKETSTART) {
+	else Assert(sym, BRACKETSTART) {
 		NextSymbol(tarr, size);
 		Expression(tarr, size);
-		if (GetSymbol(tarr) != BRACKETEND) {
-			throw exception();
-		}
+		Assert(GetSymbol(tarr), BRACKETEND);
 		NextSymbol(tarr, size);
-	}
-	else {
-		throw exception();
 	}
 }
