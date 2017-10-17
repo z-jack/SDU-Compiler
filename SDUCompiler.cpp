@@ -49,6 +49,24 @@ enum ASSEMBLE {
 	OPR
 };
 
+char** AsmList = new char*[8]{ "LIT", "LOD", "STO", "CAL", "INT", "JMP", "JPC", "OPR" };
+
+enum OPERATOR {
+	EXIT,
+	PLUS,
+	SUBTRACT,
+	MULTIPLE,
+	DIVISION,
+	EQUAL,
+	NOTEQUAL,
+	GREATTHAN,
+	GREATEQUAL,
+	LESSTHAN,
+	LESSEQUAL,
+	IN,
+	OUT
+};
+
 struct Token
 {
 	SYMBOLS sym;
@@ -61,7 +79,14 @@ struct Entry
 	SYMBOLS sym;
 	int value;
 	int level;
-	unsigned int address;
+	int address;
+};
+
+struct AsmStm
+{
+	ASSEMBLE f;
+	int l;
+	int a;
 };
 
 #define Assert(a,b) \
@@ -72,11 +97,21 @@ if(!a){throw std::exception("Unexpected Symbol.");}\
 else
 
 using namespace std;
+template<typename T>
+T* Q2List(queue<T>& q, int& size);
+template<typename T>
+void QStuff(queue<T>& q, int size);
+template<typename T>
+void QShift(queue<T>& q, int size);
+template<typename T>
+void QConcat(queue<T>& q1, queue<T>& q2);
 void Lexer(string prog, Token*& tarr, int& size);
 Token ReadBlock(string::iterator& it, string::iterator& end);
 SYMBOLS GetSymbol(Token* t);
 SYMBOLS NextSymbol(Token*& tarr, int& size, bool flag);
-void Maintain(string name, SYMBOLS s, int value, void* ptr);
+void Maintain(string name, SYMBOLS s, int value, int ptr);
+void LookUp(string name, Entry& e);
+void ValidVar(Entry e);
 bool IsRelOpt(SYMBOLS s);
 bool IsAddSub(SYMBOLS s);
 bool IsMulDiv(SYMBOLS s);
@@ -93,6 +128,7 @@ void CondStm(Token*& tarr, int& size);
 void WhileStm(Token*& tarr, int& size);
 void CallStm(Token*& tarr, int& size);
 void ReadStm(Token*& tarr, int& size);
+void ValidWrite(Entry e);
 void WriteStm(Token*& tarr, int& size);
 void CompStm(Token*& tarr, int& size);
 void EmptyStm(Token*& tarr, int& size);
@@ -102,9 +138,11 @@ void Term(Token*& tarr, int& size);
 void Factor(Token*& tarr, int& size);
 
 int level = 0;
-Entry* etable = new struct Entry[1024];
 int idx = 0;
 int vct = 3;
+Entry* etable = new struct Entry[1024];
+string* stack = new string[4];
+queue<AsmStm> asmq;
 
 int main(int argc, char** argv)
 {
@@ -127,6 +165,12 @@ int main(int argc, char** argv)
 		return 1;
 	}
 	delete[] tarr;
+	delete[] etable;
+	AsmStm* aarr = Q2List(asmq, size);
+	for (int i = 0; i < size; i++) {
+		AsmStm a = aarr[i];
+		printf("%d: %s, %d, %d\n", i, AsmList[a.f], a.l, a.a);
+	}
 	return 0;
 }
 
@@ -138,12 +182,7 @@ void Lexer(string prog, Token*& tarr, int& size) {
 		char* c = (char*)q.back().value;
 	}
 	q.push(Token{ EOS, nullptr });
-	tarr = new Token[q.size()];
-	size = q.size();
-	for (int i = 0; i < size; i++) {
-		tarr[i] = q.front();
-		q.pop();
-	}
+	tarr = Q2List(q, size);
 }
 
 Token ReadBlock(string::iterator& it, string::iterator& end) {
@@ -303,13 +342,15 @@ SYMBOLS NextSymbol(Token*& tarr, int& size, bool flag = true) {
 	return GetSymbol(tarr);
 }
 
-void Maintain(string name, SYMBOLS s, int value = 0, unsigned int ptr = 0)
+void Maintain(string name, SYMBOLS s, int value = 0, int ptr = 0)
 {
+	if (idx >= 1024)
+		throw exception("Too many Identifier.");
 	if (s != CONST&&s != VARIABLE&&s != FUNCTION)
 		throw exception("Not Supported Symbol.");
 	for (int i = idx - 1; i >= 0; i--) {
 		if (etable[i].level < level)break;
-		if (etable[i].name==name) {
+		if (etable[i].name == name) {
 			switch (etable[i].sym)
 			{
 			case CONST:
@@ -330,11 +371,40 @@ void Maintain(string name, SYMBOLS s, int value = 0, unsigned int ptr = 0)
 			}
 		}
 	}
-	Entry e = Entry{ name,s,value,level,0 };
+	Entry e = Entry{ name,s,value,level,ptr };
 	if (s == VARIABLE) {
 		e.address = vct++;
 	}
 	etable[idx++] = e;
+}
+
+void LookUp(string name, Entry & e)
+{
+	e = Entry();
+	e.sym = EXCEPTION;
+	for (int i = 0; i < idx; i++) {
+		Entry et = etable[i];
+		if (et.level > level) continue;
+		if (et.name == name)
+			e = et;
+		if (et.sym == FUNCTION && et.level < level && et.name != stack[et.level]) {
+			int l = et.level;
+			while (++i < idx && etable[i].level > l);
+		}
+	}
+}
+
+void ValidVar(Entry e)
+{
+	if (e.sym == EXCEPTION) {
+		throw exception("Undefined Identifier.");
+	}
+	else if (e.sym == CONST) {
+		throw exception("Trying to Assign to Const.");
+	}
+	else if (e.sym == FUNCTION) {
+		throw exception("Trying to Assign to Function.");
+	}
 }
 
 bool IsRelOpt(SYMBOLS s) {
@@ -351,19 +421,31 @@ bool IsMulDiv(SYMBOLS s) {
 
 void Parser(Token*& tarr, int& size) {
 	SubProgram(tarr, size);
-	if (size > 0 && GetSymbol(tarr) != EOS) {
-		throw exception();
-	}
+	AssertCond((size > 0 && GetSymbol(tarr) == EOS) || size <= 0);
 }
 
 void SubProgram(Token*& tarr, int& size) {
+	queue<AsmStm> tmp;
+	bool flag = false;
 	if (GetSymbol(tarr) == CONST)
 		ConstDec(tarr, size);
 	if (GetSymbol(tarr) == VARIABLE)
 		VarDec(tarr, size);
-	if (GetSymbol(tarr) == FUNCTION)
+	if (GetSymbol(tarr) == FUNCTION) {
+		flag = true;
+		tmp = asmq;
+		asmq = queue<AsmStm>();
+		int ts = tmp.size() + 1;
+		QStuff(asmq, ts);
 		FuncDec(tarr, size);
+		tmp.push(AsmStm{ JMP, 0, (int)asmq.size() });
+		QShift(asmq, ts);
+		QConcat(tmp, asmq);
+		asmq = tmp;
+	}
+	asmq.push(AsmStm{ INT, 0, vct });
 	Statement(tarr, size);
+	asmq.push(AsmStm{ OPR, 0, EXIT });
 }
 
 void ConstDec(Token *& tarr, int & size)
@@ -431,7 +513,8 @@ void FuncHead(Token *& tarr, int & size)
 	Assert(GetSymbol(tarr), FUNCTION);
 	Assert(NextSymbol(tarr, size), IDENTIFIER);
 	string name((char*)(tarr->value));
-	Maintain(name, FUNCTION);
+	stack[level] = name;
+	Maintain(name, FUNCTION, 0, asmq.size());
 	Assert(NextSymbol(tarr, size), SEMICOLON);
 	NextSymbol(tarr, size);
 }
@@ -466,9 +549,14 @@ void Statement(Token *& tarr, int & size)
 void AssignStm(Token *& tarr, int & size)
 {
 	Assert(GetSymbol(tarr), IDENTIFIER);
+	string name((char*)tarr->value);
+	Entry e;
+	LookUp(name, e);
+	ValidVar(e);
 	Assert(NextSymbol(tarr, size), ASSIGN);
 	NextSymbol(tarr, size);
 	Expression(tarr, size);
+	asmq.push(AsmStm{ STO, level - e.level, e.address });
 }
 
 void CondStm(Token *& tarr, int & size)
@@ -478,23 +566,54 @@ void CondStm(Token *& tarr, int & size)
 	Cond(tarr, size);
 	Assert(GetSymbol(tarr), THEN);
 	NextSymbol(tarr, size);
+	queue<AsmStm> tmp = asmq;
+	asmq = queue<AsmStm>();
+	int ts = tmp.size() + 1;
+	QStuff(asmq, ts);
 	Statement(tarr, size);
+	tmp.push(AsmStm{ JPC, 0, (int)asmq.size() });
+	QShift(asmq, ts);
+	QConcat(tmp, asmq);
+	asmq = tmp;
 }
 
 void WhileStm(Token *& tarr, int & size)
 {
 	Assert(GetSymbol(tarr), WHILE);
 	NextSymbol(tarr, size);
+	int s = asmq.size();
 	Cond(tarr, size);
 	Assert(GetSymbol(tarr), DO);
 	NextSymbol(tarr, size);
+	queue<AsmStm> tmp = asmq;
+	asmq = queue<AsmStm>();
+	int ts = tmp.size() + 1;
+	QStuff(asmq, ts);
 	Statement(tarr, size);
+	asmq.push(AsmStm{ JMP, 0, s });
+	tmp.push(AsmStm{ JPC, 0, (int)asmq.size() });
+	QShift(asmq, ts);
+	QConcat(tmp, asmq);
+	asmq = tmp;
 }
 
 void CallStm(Token *& tarr, int & size)
 {
 	Assert(GetSymbol(tarr), CALL);
 	Assert(NextSymbol(tarr, size), IDENTIFIER);
+	string name((char*)tarr->value);
+	Entry e;
+	LookUp(name, e);
+	if (e.sym == EXCEPTION) {
+		throw exception("Undefined Identifier.");
+	}
+	else if (e.sym == CONST) {
+		throw exception("Trying to Call Const.");
+	}
+	else if (e.sym == VARIABLE) {
+		throw exception("Trying to Call Variable.");
+	}
+	asmq.push(AsmStm{ CAL, level - e.level, e.address });
 	NextSymbol(tarr, size);
 }
 
@@ -503,11 +622,44 @@ void ReadStm(Token *& tarr, int & size)
 	Assert(GetSymbol(tarr), READ);
 	Assert(NextSymbol(tarr, size), BRACKETSTART);
 	Assert(NextSymbol(tarr, size), IDENTIFIER);
+	string name((char*)tarr->value);
+	Entry e;
+	LookUp(name, e);
+	ValidVar(e);
+	asmq.push(AsmStm{ OPR, 0, IN });
+	asmq.push(AsmStm{ STO,level - e.level,e.address });
 	while (NextSymbol(tarr, size) == COMMA) {
 		Assert(NextSymbol(tarr, size), IDENTIFIER);
+		name = string((char*)tarr->value);
+		LookUp(name, e);
+		ValidVar(e);
+		asmq.push(AsmStm{ OPR, 0, IN });
+		asmq.push(AsmStm{ STO,level - e.level,e.address });
 	}
 	Assert(GetSymbol(tarr), BRACKETEND);
 	NextSymbol(tarr, size);
+}
+
+void ValidWrite(Entry e)
+{
+	switch (e.sym)
+	{
+	case EXCEPTION:
+		throw exception("Undefined Identifier.");
+		break;
+	case VARIABLE:
+		asmq.push(AsmStm{ LOD,level - e.level,e.address });
+		break;
+	case CONST:
+		asmq.push(AsmStm{ LIT,0,e.value });
+		break;
+	case FUNCTION:
+		throw exception("Tring to Write Function.");
+		break;
+	default:
+		throw exception("Unknown Exception.");
+		break;
+	}
 }
 
 void WriteStm(Token *& tarr, int & size)
@@ -515,8 +667,17 @@ void WriteStm(Token *& tarr, int & size)
 	Assert(GetSymbol(tarr), WRITE);
 	Assert(NextSymbol(tarr, size), BRACKETSTART);
 	Assert(NextSymbol(tarr, size), IDENTIFIER);
+	string name((char*)tarr->value);
+	Entry e;
+	LookUp(name, e);
+	ValidWrite(e);
+	asmq.push(AsmStm{ OPR, 0, OUT });
 	while (NextSymbol(tarr, size) == COMMA) {
 		Assert(NextSymbol(tarr, size), IDENTIFIER);
+		name = string((char*)tarr->value);
+		LookUp(name, e);
+		ValidWrite(e);
+		asmq.push(AsmStm{ OPR, 0, OUT });
 	}
 	Assert(GetSymbol(tarr), BRACKETEND);
 	NextSymbol(tarr, size);
@@ -548,21 +709,55 @@ void Cond(Token *& tarr, int & size)
 	else {
 		Expression(tarr, size);
 		AssertCond(IsRelOpt(GetSymbol(tarr)));
+		SYMBOLS s = tarr->sym;
 		NextSymbol(tarr, size);
 		Expression(tarr, size);
+		switch (s)
+		{
+		case EQ:
+			asmq.push(AsmStm{ OPR,0,EQUAL });
+			break;
+		case NE:
+			asmq.push(AsmStm{ OPR,0,NOTEQUAL });
+			break;
+		case LT:
+			asmq.push(AsmStm{ OPR,0,LESSTHAN });
+			break;
+		case LE:
+			asmq.push(AsmStm{ OPR,0,LESSEQUAL });
+			break;
+		case GT:
+			asmq.push(AsmStm{ OPR,0,GREATTHAN });
+			break;
+		case GE:
+			asmq.push(AsmStm{ OPR,0,GREATEQUAL });
+			break;
+		default:
+			throw exception("Unknown Exception.");
+			break;
+		}
 	}
 }
 
 void Expression(Token *& tarr, int & size)
 {
 	if (IsAddSub(GetSymbol(tarr))) {
+		SYMBOLS s = tarr->sym;
 		NextSymbol(tarr, size);
+		asmq.push(AsmStm{ LIT,0,0 });
+		Term(tarr, size);
+		asmq.push(AsmStm{ OPR, 0, s == ADD ? PLUS : SUBTRACT });
 	}
-	Term(tarr, size);
+	else
+	{
+		Term(tarr, size);
+	}
 	while (IsAddSub(GetSymbol(tarr)))
 	{
+		SYMBOLS s = tarr->sym;
 		NextSymbol(tarr, size);
 		Term(tarr, size);
+		asmq.push(AsmStm{ OPR, 0, s == ADD ? PLUS : SUBTRACT });
 	}
 }
 
@@ -571,8 +766,10 @@ void Term(Token *& tarr, int & size)
 	Factor(tarr, size);
 	while (IsMulDiv(GetSymbol(tarr)))
 	{
+		SYMBOLS s = tarr->sym;
 		NextSymbol(tarr, size);
 		Factor(tarr, size);
+		asmq.push(AsmStm{ OPR, 0, s == MUL ? MULTIPLE : DIVISION });
 	}
 }
 
@@ -580,6 +777,33 @@ void Factor(Token *& tarr, int & size)
 {
 	SYMBOLS sym = GetSymbol(tarr);
 	if (sym == IDENTIFIER || sym == NUMBER) {
+		if (sym == IDENTIFIER) {
+			string name((char*)tarr->value);
+			Entry e;
+			LookUp(name, e);
+			switch (e.sym)
+			{
+			case EXCEPTION:
+				throw exception("Undefined Identifier.");
+				break;
+			case CONST:
+				asmq.push(AsmStm{ LIT,0,e.value });
+				break;
+			case VARIABLE:
+				asmq.push(AsmStm{ LOD,level - e.level,e.address });
+				break;
+			case FUNCTION:
+				throw exception("Tring to Calculate Function.");
+				break;
+			default:
+				throw exception("Unknown Exception.");
+				break;
+			}
+		}
+		else {
+			int i(*(int*)tarr->value);
+			asmq.push(AsmStm{ LIT,0,i });
+		}
 		NextSymbol(tarr, size);
 	}
 	else Assert(sym, BRACKETSTART) {
@@ -587,5 +811,45 @@ void Factor(Token *& tarr, int & size)
 		Expression(tarr, size);
 		Assert(GetSymbol(tarr), BRACKETEND);
 		NextSymbol(tarr, size);
+	}
+}
+
+template<typename T>
+T * Q2List(queue<T>& q, int& size)
+{
+	T* arr = new T[q.size()];
+	size = q.size();
+	for (int i = 0; i < size; i++) {
+		arr[i] = q.front();
+		q.pop();
+	}
+	return arr;
+}
+
+template<typename T>
+void QStuff(queue<T>& q, int size)
+{
+	for (int i = 0; i < size; i++) {
+		q.push(T());
+	}
+}
+
+template<typename T>
+void QShift(queue<T>& q, int size)
+{
+	if (q.size() < size)
+		size = q.size();
+	for (int i = 0; i < size; i++) {
+		q.pop();
+	}
+}
+
+template<typename T>
+void QConcat(queue<T>& q1, queue<T>& q2)
+{
+	while (!q2.empty())
+	{
+		q1.push(q2.front());
+		q2.pop();
 	}
 }
