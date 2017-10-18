@@ -3,6 +3,8 @@
 
 #include "stdafx.h"
 
+#pragma region DataStruct
+
 enum SYMBOLS {
 	EXCEPTION = 0,
 	NUMBER,
@@ -89,6 +91,10 @@ struct AsmStm
 	int a;
 };
 
+#pragma endregion
+
+#pragma region Declare
+
 #define Assert(a,b) \
 if(a!=b){throw std::exception("Unexpected Symbol.");}\
 else
@@ -136,19 +142,22 @@ void Cond(Token*& tarr, int& size);
 void Expression(Token*& tarr, int& size);
 void Term(Token*& tarr, int& size);
 void Factor(Token*& tarr, int& size);
+void Simulator(AsmStm* aarr, int size);
 
 int level = 0;
 int idx = 0;
 int vct = 3;
 Entry* etable = new struct Entry[1024];
-string* stack = new string[4];
+string* stk = new string[4];
 queue<AsmStm> asmq;
+
+#pragma endregion
 
 int main(int argc, char** argv)
 {
 	if (argc != 2) {
 		printf("Usage: SDUCompiler filename");
-		return 1;
+		return -1;
 	}
 	ifstream file(argv[1]);
 	string prog(static_cast<stringstream const&>(stringstream() << file.rdbuf()).str());
@@ -171,8 +180,18 @@ int main(int argc, char** argv)
 		AsmStm a = aarr[i];
 		printf("%d: %s, %d, %d\n", i, AsmList[a.f], a.l, a.a);
 	}
+	printf("===== Running =====\n");
+	try {
+		Simulator(aarr, size);
+	}
+	catch (exception e) {
+		fprintf(stderr, "<Simulator Error> %s\n", e.what());
+		return 2;
+	}
 	return 0;
 }
+
+#pragma region Lexer
 
 void Lexer(string prog, Token*& tarr, int& size) {
 	string::iterator it;
@@ -327,6 +346,10 @@ Token ReadBlock(string::iterator& it, string::iterator& end) {
 	return Token{ EXCEPTION, nullptr };
 }
 
+#pragma endregion
+
+#pragma region Parser
+
 SYMBOLS GetSymbol(Token* t) {
 	return t[0].sym;
 }
@@ -387,7 +410,7 @@ void LookUp(string name, Entry & e)
 		if (et.level > level) continue;
 		if (et.name == name)
 			e = et;
-		if (et.sym == FUNCTION && et.level < level && et.name != stack[et.level]) {
+		if (et.sym == FUNCTION && et.level < level && et.name != stk[et.level]) {
 			int l = et.level;
 			while (++i < idx && etable[i].level > l);
 		}
@@ -513,7 +536,7 @@ void FuncHead(Token *& tarr, int & size)
 	Assert(GetSymbol(tarr), FUNCTION);
 	Assert(NextSymbol(tarr, size), IDENTIFIER);
 	string name((char*)(tarr->value));
-	stack[level] = name;
+	stk[level] = name;
 	Maintain(name, FUNCTION, 0, asmq.size());
 	Assert(NextSymbol(tarr, size), SEMICOLON);
 	NextSymbol(tarr, size);
@@ -666,17 +689,12 @@ void WriteStm(Token *& tarr, int & size)
 {
 	Assert(GetSymbol(tarr), WRITE);
 	Assert(NextSymbol(tarr, size), BRACKETSTART);
-	Assert(NextSymbol(tarr, size), IDENTIFIER);
-	string name((char*)tarr->value);
-	Entry e;
-	LookUp(name, e);
-	ValidWrite(e);
+	NextSymbol(tarr, size);
+	Expression(tarr, size);
 	asmq.push(AsmStm{ OPR, 0, OUT });
-	while (NextSymbol(tarr, size) == COMMA) {
-		Assert(NextSymbol(tarr, size), IDENTIFIER);
-		name = string((char*)tarr->value);
-		LookUp(name, e);
-		ValidWrite(e);
+	while (GetSymbol(tarr) == COMMA) {
+		NextSymbol(tarr, size);
+		Expression(tarr, size);
 		asmq.push(AsmStm{ OPR, 0, OUT });
 	}
 	Assert(GetSymbol(tarr), BRACKETEND);
@@ -853,3 +871,200 @@ void QConcat(queue<T>& q1, queue<T>& q2)
 		q2.pop();
 	}
 }
+
+#pragma endregion
+
+#pragma region Simulator
+
+void Simulator(AsmStm * aarr, int size)
+{
+	stack<int> s;
+	s.push(0);
+	int* memory = new int[1024];
+	int ptr = 0;
+	int tail = -1;
+	memory[0] = 0;
+	memory[1] = 0;
+	memory[2] = -1;
+
+	for (int i = 0; i < size;) {
+		AsmStm a = aarr[i];
+		int tpr, v, x, y;
+		string ch;
+		switch (a.f)
+		{
+		case LIT:
+			s.push(a.a);
+			break;
+		case LOD:
+			tpr = ptr;
+			for (int i = 0; i < a.l; i++) {
+				tpr = memory[tpr];
+			}
+			s.push(memory[tpr + a.a]);
+			break;
+		case STO:
+			v = s.top();
+			s.pop();
+			tpr = ptr;
+			for (int i = 0; i < a.l; i++) {
+				tpr = memory[tpr];
+			}
+			memory[tpr + a.a] = v;
+			break;
+		case CAL:
+			if (tail >= 1021)
+				throw exception("Out of Memory.");
+			tpr = ptr;
+			for (int i = 0; i < a.l; i++) {
+				tpr = memory[tpr];
+			}
+			memory[tail + 1] = tpr;
+			memory[tail + 2] = 0;
+			memory[tail + 3] = i + 1;
+			s.push(ptr);
+			ptr = tail + 1;
+			i = a.a;
+			continue;
+			break;
+		case INT:
+			memory[ptr + 1] += a.a;
+			tail += a.a;
+			if (tail >= 1024)
+				throw exception("Out of Memory.");
+			break;
+		case JMP:
+			i = a.a;
+			continue;
+			break;
+		case JPC:
+			x = s.top();
+			s.pop();
+			if (!x) {
+				i = a.a;
+				continue;
+			}
+			break;
+		case OPR:
+			switch (a.a)
+			{
+			case EXIT:
+				tail -= memory[ptr + 1];
+				i = memory[ptr + 2];
+				ptr = s.top();
+				s.pop();
+				if (i < 0)
+					goto finish;
+				else
+					continue;
+				break;
+			case PLUS:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				s.push(x + y);
+				break;
+			case SUBTRACT:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				s.push(x - y);
+				break;
+			case MULTIPLE:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				s.push(x * y);
+				break;
+			case DIVISION:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				if (y == 0)
+					throw exception("Devided by 0.");
+				s.push(x / y);
+				break;
+			case EQUAL:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				s.push(x == y ? 1 : 0);
+				break;
+			case NOTEQUAL:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				s.push(x == y ? 0 : 1);
+				break;
+			case GREATTHAN:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				s.push(x > y ? 1 : 0);
+				break;
+			case GREATEQUAL:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				s.push(x >= y ? 1 : 0);
+				break;
+			case LESSTHAN:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				s.push(x < y ? 1 : 0);
+				break;
+			case LESSEQUAL:
+				y = s.top();
+				s.pop();
+				x = s.top();
+				s.pop();
+				s.push(x <= y ? 1 : 0);
+				break;
+			case IN:
+				while (1) {
+					printf(">>> ");
+					ch = "";
+					cin >> ch;
+					try {
+						x = stoi(ch);
+						s.push(x);
+						break;
+					}
+					catch (exception) {
+						fprintf(stderr, "<Simulator Warning> Invalid Input.\n");
+					}
+				}
+				break;
+			case OUT:
+				x = s.top();
+				s.pop();
+				printf("%d\n", x);
+				break;
+			default:
+				throw exception("Unexpected Operation.");
+				break;
+			}
+			break;
+		default:
+			throw exception("Unexpected Operation.");
+			break;
+		}
+		if (++i >= size) {
+			throw exception("Access Denied.");
+		}
+	}
+finish:
+	delete[] memory;
+}
+
+#pragma endregion
