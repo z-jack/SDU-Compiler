@@ -163,7 +163,13 @@ int main(int argc, char** argv)
 	string prog(static_cast<stringstream const&>(stringstream() << file.rdbuf()).str());
 	Token* tarr;
 	int size;
-	Lexer(prog, tarr, size);
+	try {
+		Lexer(prog, tarr, size);
+	}
+	catch (exception e) {
+		fprintf(stderr, "<Lexer Error> %s\n", e.what());
+		return 1;
+	}
 	Token* t = tarr;
 	int s = size;
 	try {
@@ -198,7 +204,8 @@ void Lexer(string prog, Token*& tarr, int& size) {
 	queue<Token> q;
 	for (it = prog.begin(); it < prog.end(); it++) {
 		q.push(ReadBlock(it, prog.end()));
-		char* c = (char*)q.back().value;
+		if (it == prog.end())
+			break;
 	}
 	q.push(Token{ EOS, nullptr });
 	tarr = Q2List(q, size);
@@ -206,7 +213,7 @@ void Lexer(string prog, Token*& tarr, int& size) {
 
 Token ReadBlock(string::iterator& it, string::iterator& end) {
 	char ch = *it;
-	while ((ch == ' ' || ch == '\n') && it < end)
+	while ((ch == ' ' || ch == '\n' || ch == '\t') && it < end)
 	{
 		it++;
 		if (it != end)
@@ -342,6 +349,9 @@ Token ReadBlock(string::iterator& it, string::iterator& end) {
 			return Token{ ASSIGN,nullptr };
 		}
 		return Token{ EXCEPTION,nullptr };
+	}
+	if (ch == '.') {
+		return Token{ EOS,nullptr };
 	}
 	return Token{ EXCEPTION, nullptr };
 }
