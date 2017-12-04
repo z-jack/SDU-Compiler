@@ -959,12 +959,6 @@ void Simulator(AsmStm * aarr, int size)
 			switch (a.a)
 			{
 			case EXIT:
-				printf("\n<Simulator Log> pop block:\n");
-				printf("<Simulator Log> dynamic link: %d\n<Simulator Log> return ptr: %d\n<Simulator Log> static link: %d\n<Simulator Log> variable value:", s.top(), memory[ptr + 2], memory[ptr]);
-				for (int x = ptr + 3; x < tail; x++) {
-					printf("%d\t", memory[x]);
-				}
-				printf("\n");
 				tail -= memory[ptr + 1];
 				i = memory[ptr + 2];
 				ptr = s.top();
