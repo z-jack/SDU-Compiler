@@ -1,0 +1,47 @@
+var a, b, flag;
+procedure first;
+	var a,b,c;
+	procedure second;
+		var a,b;
+			begin
+				a:=5;
+				b:=6;
+				write(a);
+				write(b);
+				write(c);
+				if flag=1  then
+				begin
+					flag:=2;
+					call first
+				end;
+				if flag=0 then
+				begin
+					flag:=1;
+					call second
+				end
+
+			end;
+	begin
+		a:=3;
+		b:=4;
+		c:=233;
+		write(a);
+		write(b);
+		write(flag);
+		if flag=2 then
+		begin
+			c:=666
+		end;
+		call second;
+		if flag=2 then write(c)
+	end;
+begin
+	a:=1;
+	b:=2;
+	flag:=0;
+	write(a);
+	write(b);
+	call first;
+	write(a);
+	write(b)
+end.
